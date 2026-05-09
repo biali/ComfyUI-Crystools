@@ -396,44 +396,38 @@ class CGPUInfo:
         if not self.tegrastatsPath:
             return ''
 
-        try:
-            completed = subprocess.run(
-                [self.tegrastatsPath, '--interval', '100', '--count', '1'],
-                capture_output=True,
-                text=True,
-                timeout=2,
-                check=False,
-            )
-            output = completed.stdout.strip()
-            if output:
-                return output.splitlines()[-1]
-        except Exception:
-            pass
-
         process = None
         try:
+            # Start tegrastats (continuous mode)
             process = subprocess.Popen(
-                [self.tegrastatsPath, '--interval', '100'],
+                [self.tegrastatsPath, '--interval', '1000'],
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
                 text=True,
             )
-            output, _ = process.communicate(timeout=1)
-            output = output.strip()
-            if output:
-                return output.splitlines()[-1]
-        except subprocess.TimeoutExpired:
-            if process:
-                process.kill()
-                output, _ = process.communicate()
-                output = output.strip()
-                if output:
-                    return output.splitlines()[-1]
+
+            # Read only the first valid line
+            start = time.time()
+            while True:
+                line = process.stdout.readline()
+                if line:
+                    line = line.strip()
+                    if line:
+                        return line
+
+                # Safety timeout (2s)
+                if time.time() - start > 2:
+                    break
+
         except Exception as e:
             logger.error('Could not read tegrastats. ' + str(e))
+
         finally:
-            if process and process.poll() is None:
-                process.kill()
+            if process:
+                try:
+                    process.kill()
+                except Exception:
+                    pass
 
         return ''
 
@@ -441,25 +435,45 @@ class CGPUInfo:
         stats = {
             'gpu_utilization': -1,
             'gpu_temperature': -1,
+            'cpu_temperature': -1,
             'ram_total': -1,
             'ram_used': -1,
         }
 
-        gpu_match = re.search(r'\bGR3D_FREQ\s+(\d+(?:\.\d+)?)%', line)
-        if gpu_match:
-            stats['gpu_utilization'] = float(gpu_match.group(1))
+        tokens = line.split()
 
-        ram_match = re.search(r'\bRAM\s+(\d+(?:\.\d+)?)/(\d+(?:\.\d+)?)([KMG]B)\b', line)
-        if ram_match:
-            used = float(ram_match.group(1))
-            total = float(ram_match.group(2))
-            multiplier = self.memoryUnitMultiplier(ram_match.group(3))
-            stats['ram_used'] = int(used * multiplier)
-            stats['ram_total'] = int(total * multiplier)
+        for i, tok in enumerate(tokens):
+            # GPU usage
+            if tok == "GR3D_FREQ" and i + 1 < len(tokens):
+                val = tokens[i + 1].split('%')[0]
+                if val.replace('.', '', 1).isdigit():
+                    stats['gpu_utilization'] = float(val)
 
-        temp_match = re.search(r'\bGPU@(\d+(?:\.\d+)?)C\b', line)
-        if temp_match:
-            stats['gpu_temperature'] = float(temp_match.group(1))
+            # GPU temp (gpu@53.5C or GPU@53.5C)
+            if tok.lower().startswith("gpu@"):
+                try:
+                    stats['gpu_temperature'] = float(tok.split('@')[1].replace('C', ''))
+                except:
+                    pass
+
+            # CPU temp
+            if tok.lower().startswith("cpu@"):
+                try:
+                    stats['cpu_temperature'] = float(tok.split('@')[1].replace('C', ''))
+                except:
+                    pass
+
+            # RAM
+            if tok == "RAM" and i + 1 < len(tokens):
+                try:
+                    used, total = tokens[i + 1].split('/')
+                    unit = tokens[i + 1][-2:]  # MB / GB
+                    multiplier = self.memoryUnitMultiplier(unit)
+
+                    stats['ram_used'] = int(float(used) * multiplier)
+                    stats['ram_total'] = int(float(total[:-2]) * multiplier)
+                except:
+                    pass
 
         return stats
 
