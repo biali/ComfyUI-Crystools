@@ -63,5 +63,5 @@ class CMonitor:
         self.threadController.set()
 
 
-cmonitor = CMonitor(1, True, True, True, True, True)
+cmonitor = CMonitor(5, True, True, True, True, True)
 
